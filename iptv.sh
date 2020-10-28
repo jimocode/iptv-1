@@ -7995,35 +7995,33 @@ EditChannelMenu()
             if [[ $restart_yn == "否" ]]
             then
                 Println "不重启...\n"
-                exit 1
+            else
+                StopChannel
+                GetChannelInfo
+                TestXtreamCodesLink
+                if [ "$to_try" -eq 1 ] 
+                then
+                    continue
+                fi
+                StartChannel
+                Println "$info 频道重启成功 !\n"
             fi
-
-            StopChannel
-            GetChannelInfo
-            TestXtreamCodesLink
-            if [ "$to_try" -eq 1 ] 
-            then
-                continue
-            fi
-            StartChannel
-            Println "$info 频道重启成功 !\n"
         else
             inquirer list_input "是否启动此频道" yn_options start_yn
 
             if [[ $start_yn == "否" ]]
             then
                 Println "不启动...\n"
-                exit 1
+            else
+                GetChannelInfo
+                TestXtreamCodesLink
+                if [ "$to_try" -eq 1 ] 
+                then
+                    continue
+                fi
+                StartChannel
+                Println "$info 频道启动成功 !\n"
             fi
-
-            GetChannelInfo
-            TestXtreamCodesLink
-            if [ "$to_try" -eq 1 ] 
-            then
-                continue
-            fi
-            StartChannel
-            Println "$info 频道启动成功 !\n"
         fi
     done
 }
@@ -33363,19 +33361,20 @@ then
 
     Println "  Armbian 管理面板 ${normal}${red}[v$sh_ver]${normal}
 
-${green}1.${normal} 更改 apt 源
-${green}2.${normal} 修复 N1 dtb
-${green}3.${normal} 安装 docker
-${green}4.${normal} 安装 dnscrypt
-${green}5.${normal} 安装 openwrt
-${green}6.${normal} 安装 openwrt-v2ray
+  ${green}1.${normal} 更改 apt 源
+  ${green}2.${normal} 修复 N1 dtb
+  ${green}3.${normal} 安装 docker
+  ${green}4.${normal} 安装 dnscrypt
+  ${green}5.${normal} 安装 openwrt
+  ${green}6.${normal} 安装 openwrt-v2ray
 ————————————
-${green}7.${normal} 设置 docker 镜像加速
-${green}8.${normal} 设置 vimrc
-${green}9.${normal} 更新脚本
+  ${green}7.${normal} 设置 docker 镜像加速
+  ${green}8.${normal} 设置 vimrc
+  ${green}9.${normal} 开关 edns0
+ ${green}10.${normal} 更新脚本
 
 "
-    read -p "请输入数字 [1-9]: " armbian_num
+    read -p "请输入数字 [1-10]: " armbian_num
 
     case $armbian_num in
         1) 
@@ -33540,6 +33539,7 @@ method=ignore" > /etc/NetworkManager/system-connections/eth0.nmconnection
 
                         sed -i "0,/.*server_names = \[.*/s//server_names = ['alidns-doh','geekdns-doh']/" dnscrypt-proxy.toml
                         sed -i "0,/.*listen_addresses = \['127.0.0.1:53']/s//listen_addresses = ['127.0.0.1:53', '$eth0_ip:53']/" dnscrypt-proxy.toml
+                        sed -i "0,/.*require_dnssec = .*/s//require_dnssec = true/" dnscrypt-proxy.toml
 
                         for((i=0;i<3;i++));
                         do
@@ -33582,6 +33582,7 @@ method=ignore" > /etc/NetworkManager/system-connections/eth0.nmconnection
                         # echo -e "nameserver 127.0.0.1\noptions edns0" > /etc/resolv.conf
                     else
                         Println "$error dnscrypt proxy 下载失败, 请重试\n"
+                        exit 1
                     fi
                 elif [[ $dnscrypt_version_old != "$dnscrypt_version" ]] 
                 then
@@ -33599,14 +33600,22 @@ method=ignore" > /etc/NetworkManager/system-connections/eth0.nmconnection
                         eth0_ip=$(ip addr show eth0 | grep "inet\b" | awk '{print $2}' | cut -d/ -f1)
                         sed -i "0,/.*server_names = \[.*/s//server_names = ['alidns-doh','geekdns-doh']/" dnscrypt-proxy.toml
                         sed -i "0,/.*listen_addresses = \['127.0.0.1:53']/s//listen_addresses = ['127.0.0.1:53', '$eth0_ip:53']/" dnscrypt-proxy.toml
+                        sed -i "0,/.*require_dnssec = .*/s//require_dnssec = true/" dnscrypt-proxy.toml
                         ./dnscrypt-proxy -service install > /dev/null
                         ./dnscrypt-proxy -service start > /dev/null
                         Println "$info dnscrypt proxy 升级成功\n"
                     else
                         Println "$error dnscrypt proxy 下载失败, 请重试\n"
+                        exit 1
                     fi
                 else
                     Println "$error dnscrypt proxy 已经是最新\n"
+                fi
+                if ! grep -q "options edns0" < /etc/resolv.conf
+                then
+                    echo "options edns0" >> /etc/resolv.conf
+                    systemctl restart dnscrypt-proxy
+                    chattr +i /etc/resolv.conf
                 fi
             else
                 Println "$error 无法连接服务器, 请稍后再试\n"
@@ -33631,6 +33640,22 @@ method=ignore" > /etc/NetworkManager/system-connections/eth0.nmconnection
 
             if grep -q "$docker_openwrt_ver" < <(docker container ls -a)
             then
+                if [ -f /etc/NetworkManager/dispatcher.d/promisc.sh ] 
+                then
+                    printf '%s' '#!/usr/bin/env bash
+
+interface=$1
+event=$2
+
+if [[ $event == "up" ]] && { [[ $interface == "eth0" ]] || [[ $interface == "hMACvLAN" ]]; }
+then
+  ip link set $interface promisc on
+  echo "$interface received $event" | systemd-cat -p info -t dispatch_script
+fi' > /etc/NetworkManager/dispatcher.d/90-promisc.sh
+
+                    rm -f /etc/NetworkManager/dispatcher.d/promisc.sh
+                    chmod +x /etc/NetworkManager/dispatcher.d/90-promisc.sh
+                fi
                 Println "$error openwrt 已经存在\n"
                 exit 1
             else
@@ -33790,9 +33815,10 @@ if [[ $event == "up" ]] && { [[ $interface == "eth0" ]] || [[ $interface == "hMA
 then
   ip link set $interface promisc on
   echo "$interface received $event" | systemd-cat -p info -t dispatch_script
-fi' > /etc/NetworkManager/dispatcher.d/promisc.sh
+fi' > /etc/NetworkManager/dispatcher.d/90-promisc.sh
 
-            chmod +x /etc/NetworkManager/dispatcher.d/promisc.sh
+            rm -f /etc/NetworkManager/dispatcher.d/promisc.sh
+            chmod +x /etc/NetworkManager/dispatcher.d/90-promisc.sh
 
             ip link set eth0 promisc on
             ip link set hMACvLAN promisc on
@@ -33928,9 +33954,48 @@ filetype indent off
             fi
         ;;
         9)
+            DNSCRYPT_ROOT=$(dirname ~/dnscrypt-*/dnscrypt-proxy)
+            dnscrypt_version=${DNSCRYPT_ROOT##*-}
+            if [[ $dnscrypt_version == "*" ]] 
+            then
+                Println "$error 请先安装 dnscrypt proxy\n"
+                exit 1
+            fi
+            echo
+            yn_options=( '否' '是' )
+            if grep -q "options edns0" < /etc/resolv.conf
+            then
+                inquirer list_input "是否关闭 edns0" yn_options toggle_edns0_yn
+
+                if [[ $toggle_edns0_yn == "是" ]]
+                then
+                    chattr -i /etc/resolv.conf
+                    sed -i '/options edns0/d' /etc/resolv.conf
+                    sed -i "0,/.*require_dnssec = .*/s//require_dnssec = false/" $DNSCRYPT_ROOT/dnscrypt-proxy.toml
+                    systemctl restart dnscrypt-proxy
+                    Println "$info edns0 已关闭\n"
+                else
+                    Println "已取消...\n" && exit 1
+                fi
+            else
+                inquirer list_input "是否开启 edns0" yn_options toggle_edns0_yn
+
+                if [[ $toggle_edns0_yn == "是" ]]
+                then
+                    echo "options edns0" >> /etc/resolv.conf
+                    chattr +i /etc/resolv.conf
+                    sed -i "0,/.*require_dnssec = .*/s//require_dnssec = true/" $DNSCRYPT_ROOT/dnscrypt-proxy.toml
+                    systemctl restart dnscrypt-proxy
+                    Println "$info edns0 已开启\n"
+                else
+                    Println "已取消...\n" && exit 1
+                fi
+            fi
+        ;;
+        10)
             UpdateShFile Armbian
         ;;
-        *) Println "$error 请输入正确的数字 [1-9]\n"
+        *) Println "$error 请输入正确的数字 [1-10]\n"
         ;;
     esac
     exit 0
